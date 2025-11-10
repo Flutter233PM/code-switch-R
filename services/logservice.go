@@ -99,10 +99,17 @@ func (ls *LogService) HeatmapStats(days int) ([]HeatmapStat, error) {
 	if days <= 0 {
 		days = 30
 	}
-	start := startOfDay(time.Now().AddDate(0, 0, -(days - 1)))
+	totalHours := days * 24
+	if totalHours <= 0 {
+		totalHours = 24
+	}
+	rangeStart := startOfHour(time.Now())
+	if totalHours > 1 {
+		rangeStart = rangeStart.Add(-time.Duration(totalHours-1) * time.Hour)
+	}
 	model := xdb.New("request_log")
 	options := []xdb.Option{
-		xdb.WhereGe("created_at", start.Format(timeLayout)),
+		xdb.WhereGe("created_at", rangeStart.Format(timeLayout)),
 		xdb.Field(
 			"model",
 			"input_tokens",
@@ -121,17 +128,18 @@ func (ls *LogService) HeatmapStats(days int) ([]HeatmapStat, error) {
 		}
 		return nil, err
 	}
-	dayBuckets := map[string]*HeatmapStat{}
+	hourBuckets := map[int64]*HeatmapStat{}
 	for _, record := range records {
 		createdAt, _ := parseCreatedAt(record)
 		if createdAt.IsZero() {
 			continue
 		}
-		dayKey := startOfDay(createdAt).Format("2006-01-02")
-		bucket := dayBuckets[dayKey]
+		hourStart := startOfHour(createdAt)
+		hourKey := hourStart.Unix()
+		bucket := hourBuckets[hourKey]
 		if bucket == nil {
-			bucket = &HeatmapStat{Day: dayKey}
-			dayBuckets[dayKey] = bucket
+			bucket = &HeatmapStat{Day: hourStart.Format("01-02 15")}
+			hourBuckets[hourKey] = bucket
 		}
 		bucket.TotalRequests++
 		input := record.GetInt("input_tokens")
@@ -151,17 +159,19 @@ func (ls *LogService) HeatmapStats(days int) ([]HeatmapStat, error) {
 		cost := ls.calculateCost(record.GetString("model"), usage)
 		bucket.TotalCost += cost.TotalCost
 	}
-	if len(dayBuckets) == 0 {
+	if len(hourBuckets) == 0 {
 		return []HeatmapStat{}, nil
 	}
-	daysList := make([]string, 0, len(dayBuckets))
-	for key := range dayBuckets {
-		daysList = append(daysList, key)
+	hourKeys := make([]int64, 0, len(hourBuckets))
+	for key := range hourBuckets {
+		hourKeys = append(hourKeys, key)
 	}
-	sort.Strings(daysList)
-	stats := make([]HeatmapStat, 0, min(len(daysList), days))
-	for i := len(daysList) - 1; i >= 0 && len(stats) < days; i-- {
-		stats = append(stats, *dayBuckets[daysList[i]])
+	sort.Slice(hourKeys, func(i, j int) bool {
+		return hourKeys[i] < hourKeys[j]
+	})
+	stats := make([]HeatmapStat, 0, min(len(hourKeys), totalHours))
+	for i := len(hourKeys) - 1; i >= 0 && len(stats) < totalHours; i-- {
+		stats = append(stats, *hourBuckets[hourKeys[i]])
 	}
 	return stats, nil
 }
@@ -454,6 +464,11 @@ func dayFromTimestamp(value string) string {
 func startOfDay(t time.Time) time.Time {
 	y, m, d := t.Date()
 	return time.Date(y, m, d, 0, 0, 0, 0, t.Location())
+}
+
+func startOfHour(t time.Time) time.Time {
+	y, m, d := t.Date()
+	return time.Date(y, m, d, t.Hour(), 0, 0, 0, t.Location())
 }
 
 func min(a, b int) int {

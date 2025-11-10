@@ -379,12 +379,12 @@ import { useI18n } from 'vue-i18n'
 import { Listbox, ListboxButton, ListboxOptions, ListboxOption } from '@headlessui/vue'
 import { Browser } from '@wailsio/runtime'
 import {
-  buildUsageHeatmapMatrix,
-  generateFallbackUsageHeatmap,
-  DAYS_PER_WEEK,
-  DEFAULT_USAGE_WEEKS,
-  type UsageHeatmapWeek,
-  type UsageHeatmapDay,
+	buildUsageHeatmapMatrix,
+	generateFallbackUsageHeatmap,
+	DEFAULT_HEATMAP_DAYS,
+	calculateHeatmapDayRange,
+	type UsageHeatmapWeek,
+	type UsageHeatmapDay,
 } from '../../data/usageHeatmap'
 import { automationCardGroups, createAutomationCards, type AutomationCard } from '../../data/cards'
 import lobeIcons from '../../icons/lobeIconMap'
@@ -412,8 +412,8 @@ const themeIcon = computed(() => (resolvedTheme.value === 'dark' ? 'moon' : 'sun
 const releasePageUrl = 'https://github.com/daodao97/code-switch/releases'
 const releaseApiUrl = 'https://api.github.com/repos/daodao97/code-switch/releases/latest'
 
-const USAGE_WEEKS = DEFAULT_USAGE_WEEKS
-const usageHeatmap = ref<UsageHeatmapWeek[]>(generateFallbackUsageHeatmap(USAGE_WEEKS))
+const HEATMAP_DAYS = DEFAULT_HEATMAP_DAYS
+const usageHeatmap = ref<UsageHeatmapWeek[]>(generateFallbackUsageHeatmap(HEATMAP_DAYS))
 const heatmapContainerRef = ref<HTMLElement | null>(null)
 const proxyStates = reactive<Record<ProviderTab, boolean>>({
   claude: false,
@@ -462,6 +462,8 @@ const tooltipDateFormatter = computed(() =>
   new Intl.DateTimeFormat(locale.value || 'en', {
     month: 'short',
     day: 'numeric',
+    hour: '2-digit',
+    minute: '2-digit',
   })
 )
 
@@ -476,7 +478,7 @@ const currencyFormatter = computed(() =>
 
 const formattedTooltipLabel = computed(() => {
   if (!usageTooltip.dateKey) return usageTooltip.label
-  const date = new Date(`${usageTooltip.dateKey}T00:00:00`)
+  const date = new Date(usageTooltip.dateKey)
   if (Number.isNaN(date.getTime())) {
     return usageTooltip.label
   }
@@ -621,12 +623,13 @@ const compareVersions = (current: string, remote: string) => {
 }
 
 const loadUsageHeatmap = async () => {
-  try {
-    const stats = await fetchHeatmapStats(USAGE_WEEKS * DAYS_PER_WEEK)
-    usageHeatmap.value = buildUsageHeatmapMatrix(stats, USAGE_WEEKS)
-  } catch (error) {
-    console.error('Failed to load usage heatmap stats', error)
-  }
+	try {
+		const rangeDays = calculateHeatmapDayRange(HEATMAP_DAYS)
+		const stats = await fetchHeatmapStats(rangeDays)
+		usageHeatmap.value = buildUsageHeatmapMatrix(stats, HEATMAP_DAYS)
+	} catch (error) {
+		console.error('Failed to load usage heatmap stats', error)
+	}
 }
 
 const tabs = [

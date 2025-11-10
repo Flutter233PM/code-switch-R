@@ -341,15 +341,15 @@ html.dark .mac-sidebar-item:hover {
 }
 
 .contrib-grid {
-  position: relative;
-  display: flex;
-  gap: 4px;
-  overflow-x: auto;
-  padding-bottom: 8px;
-  scrollbar-width: none;
-  -ms-overflow-style: none;
-  width: 100%;
-  justify-content: space-between;
+	position: relative;
+	display: flex;
+	gap: 4px;
+	overflow-x: auto;
+	padding-bottom: 8px;
+	scrollbar-width: none;
+	-ms-overflow-style: none;
+	width: 100%;
+	justify-content: space-between;
 }
 
 .contrib-grid::-webkit-scrollbar {
@@ -357,10 +357,10 @@ html.dark .mac-sidebar-item:hover {
 }
 
 .contrib-column {
-  display: flex;
-  flex-direction: column;
-  gap: 4px;
-  flex: 1;
+	display: flex;
+	flex-direction: column;
+	gap: 4px;
+	flex: 1;
 }
 
 .contrib-cell {
@@ -448,19 +448,19 @@ html.dark .mac-sidebar-item:hover {
 .contrib-cell.gh-level-0 { opacity: 0.4; }
 
 @media (max-width: 640px) {
-  .contrib-wall {
-    padding: 24px;
-  }
+	.contrib-wall {
+		padding: 24px;
+	}
 
-  .contrib-grid {
-    gap: 3px;
-  }
+	.contrib-grid {
+		gap: 3px;
+	}
 
-  .contrib-cell,
-  .legend-box {
-    width: 12px;
-    height: 12px;
-  }
+	.contrib-cell,
+	.legend-box {
+		width: 12px;
+		height: 12px;
+	}
 }
 .automation-section {
   display: flex;

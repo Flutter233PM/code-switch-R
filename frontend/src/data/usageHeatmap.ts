@@ -1,147 +1,194 @@
 import type { HeatmapStat } from '../services/logs'
 
 export type UsageHeatmapDay = {
-  label: string
-  dateKey: string
-  requests: number
-  inputTokens: number
-  outputTokens: number
-  reasoningTokens: number
-  cost: number
-  intensity: number
+	label: string
+	dateKey: string
+	requests: number
+	inputTokens: number
+	outputTokens: number
+	reasoningTokens: number
+	cost: number
+	intensity: number
 }
 
 export type UsageHeatmapWeek = UsageHeatmapDay[]
 
-export const DAYS_PER_WEEK = 7
-export const DEFAULT_USAGE_WEEKS = 30
+export const HEATMAP_ROWS = 8
+export const BUCKETS_PER_DAY = 3
+export const DEFAULT_HEATMAP_DAYS = 14
+const HOURS_PER_BUCKET = 8
 const LEVELS = 4
 
-const dateLabelFormatter = new Intl.DateTimeFormat('en-US', { month: 'short', day: 'numeric' })
-
-const toDateKey = (date: Date) => {
-  const year = date.getFullYear()
-  const month = `${date.getMonth() + 1}`.padStart(2, '0')
-  const day = `${date.getDate()}`.padStart(2, '0')
-  return `${year}-${month}-${day}`
-}
-
-const clampWeeks = (weeks?: number) => (weeks && weeks > 0 ? weeks : DEFAULT_USAGE_WEEKS)
+const clampDays = (days?: number) => (days && days > 0 ? Math.floor(days) : DEFAULT_HEATMAP_DAYS)
 
 const intensityForCount = (count: number, maxCount: number) => {
-  if (count <= 0 || maxCount <= 0) return 0
-  const ratio = count / maxCount
-  return Math.min(LEVELS, Math.max(1, Math.ceil(ratio * LEVELS)))
+	if (count <= 0 || maxCount <= 0) return 0
+	const ratio = count / maxCount
+	return Math.min(LEVELS, Math.max(1, Math.ceil(ratio * LEVELS)))
 }
 
-const calculateStartDate = (totalDays: number) => {
-  const today = new Date()
-  today.setHours(0, 0, 0, 0)
-  today.setDate(today.getDate() - totalDays + 1)
-  return today
+const startOfDay = (date: Date) => {
+	const start = new Date(date)
+	start.setHours(0, 0, 0, 0)
+	return start
 }
 
-export const generateFallbackUsageHeatmap = (weeks = DEFAULT_USAGE_WEEKS): UsageHeatmapWeek[] => {
-  const normalizedWeeks = clampWeeks(weeks)
-  const totalDays = normalizedWeeks * DAYS_PER_WEEK
-  const baseDate = calculateStartDate(totalDays)
-  const weeksData: UsageHeatmapWeek[] = []
+const addDays = (date: Date, days: number) => {
+	const result = new Date(date)
+	result.setDate(result.getDate() + days)
+	return result
+}
 
-  for (let w = 0; w < normalizedWeeks; w++) {
-    const week: UsageHeatmapWeek = []
-    for (let d = 0; d < DAYS_PER_WEEK; d++) {
-      const offset = w * DAYS_PER_WEEK + d
-      const date = new Date(baseDate)
-      date.setDate(baseDate.getDate() + offset)
-      const index = w * DAYS_PER_WEEK + d
-      const hash = Math.abs(Math.sin(index * 12.9898 + date.getDate()) * 1000)
-      const requests = Math.floor(hash % 20)
-      const inputTokens = requests * 120 + Math.floor(hash % 40)
-      const outputTokens = Math.floor(inputTokens * 0.6)
-      const reasoningTokens = Math.floor(requests * 15)
-      const intensity = Math.min(LEVELS, Math.floor(requests / 5))
-      const cost = Number(((inputTokens + outputTokens) * 0.000002).toFixed(6))
-      week.push({
-        label: dateLabelFormatter.format(date),
-        dateKey: toDateKey(date),
-        requests,
-        inputTokens,
-        outputTokens,
-        reasoningTokens,
-        cost,
-        intensity,
-      })
-    }
-    weeksData.push(week)
-  }
+const formatHourKey = (date: Date) => {
+	const year = date.getFullYear()
+	const month = `${date.getMonth() + 1}`.padStart(2, '0')
+	const day = `${date.getDate()}`.padStart(2, '0')
+	const hour = `${date.getHours()}`.padStart(2, '0')
+	return `${year}-${month}-${day} ${hour}`
+}
 
-  return weeksData
+const labelForCell = (date: Date) => {
+	const month = `${date.getMonth() + 1}`.padStart(2, '0')
+	const day = `${date.getDate()}`.padStart(2, '0')
+	const hour = `${date.getHours()}`.padStart(2, '0')
+	return `${month}-${day} ${hour}`
+}
+
+const normalizeStatKey = (value?: string | null) => {
+	const trimmed = value?.trim()
+	if (!trimmed) return null
+	const match = trimmed.match(/^(\d{2})-(\d{2}) (\d{2})$/)
+	if (!match) {
+		return null
+	}
+	const [, monthStr, dayStr, hourStr] = match
+	const now = new Date()
+	const year = now.getFullYear()
+	return `${year}-${monthStr}-${dayStr} ${hourStr}`
+}
+
+type StatBucket = {
+	requests: number
+	inputTokens: number
+	outputTokens: number
+	reasoningTokens: number
+	cost: number
+}
+
+const emptyBucket = (): StatBucket => ({
+	requests: 0,
+	inputTokens: 0,
+	outputTokens: 0,
+	reasoningTokens: 0,
+	cost: 0,
+})
+
+const buildColumns = (
+	days: number,
+	statsMap: Map<string, StatBucket>,
+	startDay: Date,
+	maxCount: number,
+) => {
+	const columns: UsageHeatmapWeek[] = []
+	for (let dayIndex = 0; dayIndex < days; dayIndex++) {
+		const dayStart = addDays(startDay, dayIndex)
+		for (let bucketIndex = 0; bucketIndex < BUCKETS_PER_DAY; bucketIndex++) {
+			const column: UsageHeatmapWeek = []
+			for (let rowIndex = 0; rowIndex < HEATMAP_ROWS; rowIndex++) {
+				const hour = bucketIndex * HEATMAP_ROWS + rowIndex
+				const cellTime = new Date(dayStart)
+				cellTime.setHours(hour, 0, 0, 0)
+				const key = formatHourKey(cellTime)
+				const bucket = statsMap.get(key) ?? emptyBucket()
+				column.push({
+					label: labelForCell(cellTime),
+					dateKey: cellTime.toISOString(),
+					requests: bucket.requests,
+					inputTokens: bucket.inputTokens,
+					outputTokens: bucket.outputTokens,
+					reasoningTokens: bucket.reasoningTokens,
+					cost: bucket.cost,
+					intensity: intensityForCount(bucket.requests, maxCount),
+				})
+			}
+			columns.push(column)
+		}
+	}
+	return columns
+}
+
+export const generateFallbackUsageHeatmap = (
+	days = DEFAULT_HEATMAP_DAYS,
+): UsageHeatmapWeek[] => {
+	const normalizedDays = clampDays(days)
+	const startDay = addDays(startOfDay(new Date()), -(normalizedDays - 1))
+	const statsMap = new Map<string, StatBucket>()
+
+	for (let dayIndex = 0; dayIndex < normalizedDays; dayIndex++) {
+		const dayStart = addDays(startDay, dayIndex)
+		for (let bucketIndex = 0; bucketIndex < BUCKETS_PER_DAY; bucketIndex++) {
+			for (let rowIndex = 0; rowIndex < HEATMAP_ROWS; rowIndex++) {
+				const hour = bucketIndex * HEATMAP_ROWS + rowIndex
+				const date = new Date(dayStart)
+				date.setHours(hour, 0, 0, 0)
+				const key = formatHourKey(date)
+				const seed = dayIndex * BUCKETS_PER_DAY * HEATMAP_ROWS + bucketIndex * HEATMAP_ROWS + rowIndex + 1
+				const hash = Math.abs(Math.sin(seed * 12.9898 + date.getHours()) * 1000)
+				statsMap.set(key, {
+					requests: Math.floor(hash % 20),
+					inputTokens: Math.floor(hash % 200) * 10,
+					outputTokens: Math.floor(hash % 150) * 8,
+					reasoningTokens: Math.floor(hash % 50),
+					cost: Number(((hash % 200) * 0.0025).toFixed(4)),
+				})
+			}
+		}
+	}
+
+	return buildColumns(normalizedDays, statsMap, startDay, 20)
 }
 
 export const buildUsageHeatmapMatrix = (
-  stats: HeatmapStat[] = [],
-  weeks = DEFAULT_USAGE_WEEKS,
+	stats: HeatmapStat[] = [],
+	days = DEFAULT_HEATMAP_DAYS,
 ): UsageHeatmapWeek[] => {
-  const normalizedWeeks = clampWeeks(weeks)
-  const totalDays = normalizedWeeks * DAYS_PER_WEEK
-  const startDate = calculateStartDate(totalDays)
-  type StatBucket = {
-    requests: number
-    inputTokens: number
-    outputTokens: number
-    reasoningTokens: number
-    cost: number
-  }
-  const statsMap = new Map<string, StatBucket>()
+	const normalizedDays = clampDays(days)
+	const startDay = addDays(startOfDay(new Date()), -(normalizedDays - 1))
+	const statsMap = new Map<string, StatBucket>()
 
-  stats.forEach((stat) => {
-    if (!stat) return
-    const key = stat.day?.slice(0, 10)
-    if (!key) return
-    statsMap.set(key, {
-      requests: Number(stat.total_requests) || 0,
-      inputTokens: Number(stat.input_tokens) || 0,
-      outputTokens: Number(stat.output_tokens) || 0,
-      reasoningTokens: Number(stat.reasoning_tokens) || 0,
-      cost: Number(stat.total_cost) || 0,
-    })
-  })
+	stats.forEach((stat) => {
+		if (!stat) return
+		const key = normalizeStatKey(stat.day)
+		if (!key) return
+		const bucket = statsMap.get(key)
+		const update: StatBucket = {
+			requests: Number(stat.total_requests) || 0,
+			inputTokens: Number(stat.input_tokens) || 0,
+			outputTokens: Number(stat.output_tokens) || 0,
+			reasoningTokens: Number(stat.reasoning_tokens) || 0,
+			cost: Number(stat.total_cost) || 0,
+		}
+		if (bucket) {
+			bucket.requests += update.requests
+			bucket.inputTokens += update.inputTokens
+			bucket.outputTokens += update.outputTokens
+			bucket.reasoningTokens += update.reasoningTokens
+			bucket.cost += update.cost
+		} else {
+			statsMap.set(key, { ...update })
+		}
+	})
 
-  let maxCount = 0
-  statsMap.forEach((bucket) => {
-    if (bucket.requests > maxCount) {
-      maxCount = bucket.requests
-    }
-  })
+	let maxCount = 0
+	statsMap.forEach((bucket) => {
+		if (bucket.requests > maxCount) {
+			maxCount = bucket.requests
+		}
+	})
 
-  const weeksData: UsageHeatmapWeek[] = []
-  for (let w = 0; w < normalizedWeeks; w++) {
-    const week: UsageHeatmapWeek = []
-    for (let d = 0; d < DAYS_PER_WEEK; d++) {
-      const offset = w * DAYS_PER_WEEK + d
-      const date = new Date(startDate)
-      date.setDate(startDate.getDate() + offset)
-      const key = toDateKey(date)
-      const bucket = statsMap.get(key) ?? {
-        requests: 0,
-        inputTokens: 0,
-        outputTokens: 0,
-        reasoningTokens: 0,
-        cost: 0,
-      }
-      week.push({
-        label: dateLabelFormatter.format(date),
-        dateKey: key,
-        requests: bucket.requests,
-        inputTokens: bucket.inputTokens,
-        outputTokens: bucket.outputTokens,
-        reasoningTokens: bucket.reasoningTokens,
-        cost: bucket.cost,
-        intensity: intensityForCount(bucket.requests, maxCount),
-      })
-    }
-    weeksData.push(week)
-  }
+	return buildColumns(normalizedDays, statsMap, startDay, maxCount)
+}
 
-  return weeksData
+export const calculateHeatmapDayRange = (days = DEFAULT_HEATMAP_DAYS) => {
+	return clampDays(days)
 }
