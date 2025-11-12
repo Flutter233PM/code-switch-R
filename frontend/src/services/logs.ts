@@ -74,6 +74,9 @@ export const fetchLogStats = async (platform = ''): Promise<LogStats> => {
 export type ProviderDailyStat = {
   provider: string
   total_requests: number
+  successful_requests: number
+  failed_requests: number
+  success_rate: number
   input_tokens: number
   output_tokens: number
   reasoning_tokens: number

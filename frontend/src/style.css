@@ -1059,8 +1059,48 @@ html.dark .mac-sidebar-item:hover {
   font-variant-numeric: tabular-nums;
 }
 
+.card-metric-separator {
+  display: inline-block;
+  min-width: 16px;
+  text-align: center;
+  color: rgba(15, 23, 42, 0.4);
+}
+
+.card-success-rate {
+  margin: 0;
+  font-weight: 600;
+}
+
+.card-success-rate.success-good {
+  color: #1f9d55;
+}
+
+.card-success-rate.success-warn {
+  color: #d97706;
+}
+
+.card-success-rate.success-bad {
+  color: #dc2626;
+}
+
 html.dark .card-metrics {
   color: rgba(255, 255, 255, 0.75);
+}
+
+html.dark .card-metric-separator {
+  color: rgba(255, 255, 255, 0.45);
+}
+
+html.dark .card-success-rate.success-good {
+  color: #34d399;
+}
+
+html.dark .card-success-rate.success-warn {
+  color: #fbbf24;
+}
+
+html.dark .card-success-rate.success-bad {
+  color: #f87171;
 }
 
 html.dark .card-meta {

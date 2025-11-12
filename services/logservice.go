@@ -308,6 +308,7 @@ func (ls *LogService) ProviderDailyStats(platform string) ([]ProviderDailyStat, 
 		xdb.Field(
 			"provider",
 			"model",
+			"http_code",
 			"input_tokens",
 			"output_tokens",
 			"reasoning_tokens",
@@ -348,6 +349,7 @@ func (ls *LogService) ProviderDailyStats(platform string) ([]ProviderDailyStat, 
 			stat = &ProviderDailyStat{Provider: provider}
 			statMap[provider] = stat
 		}
+		httpCode := record.GetInt("http_code")
 		input := record.GetInt("input_tokens")
 		output := record.GetInt("output_tokens")
 		reasoning := record.GetInt("reasoning_tokens")
@@ -361,6 +363,11 @@ func (ls *LogService) ProviderDailyStats(platform string) ([]ProviderDailyStat, 
 		}
 		cost := ls.calculateCost(record.GetString("model"), usage)
 		stat.TotalRequests++
+		if httpCode >= 400 {
+			stat.FailedRequests++
+		} else {
+			stat.SuccessfulRequests++
+		}
 		stat.InputTokens += int64(input)
 		stat.OutputTokens += int64(output)
 		stat.ReasoningTokens += int64(reasoning)
@@ -370,6 +377,9 @@ func (ls *LogService) ProviderDailyStats(platform string) ([]ProviderDailyStat, 
 	}
 	stats := make([]ProviderDailyStat, 0, len(statMap))
 	for _, stat := range statMap {
+		if stat.TotalRequests > 0 {
+			stat.SuccessRate = float64(stat.SuccessfulRequests) / float64(stat.TotalRequests)
+		}
 		stats = append(stats, *stat)
 	}
 	sort.Slice(stats, func(i, j int) bool {
@@ -512,6 +522,9 @@ type LogStats struct {
 type ProviderDailyStat struct {
 	Provider          string  `json:"provider"`
 	TotalRequests     int64   `json:"total_requests"`
+	SuccessfulRequests int64   `json:"successful_requests"`
+	FailedRequests    int64   `json:"failed_requests"`
+	SuccessRate       float64 `json:"success_rate"`
 	InputTokens       int64   `json:"input_tokens"`
 	OutputTokens      int64   `json:"output_tokens"`
 	ReasoningTokens   int64   `json:"reasoning_tokens"`

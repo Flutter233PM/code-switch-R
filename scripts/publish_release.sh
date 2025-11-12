@@ -73,6 +73,6 @@ for asset in "${ASSETS[@]}"; do
   echo "  asset: $asset"
 done
 
-# gh release create "$TAG" "${ASSETS[@]}" \
-#   --title "$TAG" \
-#   --notes-file "$NOTES"
+gh release create "$TAG" "${ASSETS[@]}" \
+  --title "$TAG" \
+  --notes-file "$NOTES"

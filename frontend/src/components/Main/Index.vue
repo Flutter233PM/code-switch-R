@@ -212,7 +212,30 @@
                 </button>
               </div>
               <!-- <p class="card-subtitle">{{ card.apiUrl }}</p> -->
-              <p class="card-metrics">{{ providerStatLine(card.name) }}</p>
+              <p
+                v-for="stats in [providerStatDisplay(card.name)]"
+                :key="`metrics-${card.id}`"
+                class="card-metrics"
+              >
+                <template v-if="stats.state !== 'ready'">
+                  {{ stats.message }}
+                </template>
+                <template v-else>
+                  <span
+                    v-if="stats.successRateLabel"
+                    class="card-success-rate"
+                    :class="stats.successRateClass"
+                  >
+                    {{ stats.successRateLabel }}
+                  </span>
+                  <span class="card-metric-separator" aria-hidden="true">·</span>
+                  <span >{{ stats.requests }}</span>
+                  <span class="card-metric-separator" aria-hidden="true">·</span>
+                  <span>{{ stats.tokens }}</span>
+                  <span class="card-metric-separator" aria-hidden="true">·</span>
+                  <span>{{ stats.cost }}</span>
+                </template>
+              </p>
             </div>
           </div>
           <div class="card-actions">
@@ -726,22 +749,60 @@ const loadProviderStats = async (tab: ProviderTab) => {
   }
 }
 
-const providerStatLine = (providerName: string) => {
+type ProviderStatDisplay =
+  | { state: 'loading' | 'empty'; message: string }
+  | {
+      state: 'ready'
+      requests: string
+      tokens: string
+      cost: string
+      successRateLabel: string
+      successRateClass: string
+    }
+
+const SUCCESS_RATE_THRESHOLDS = {
+  healthy: 0.95,
+  warning: 0.8,
+} as const
+
+const formatSuccessRateLabel = (value: number) => {
+  const percent = clamp(value, 0, 1) * 100
+  const decimals = percent >= 99.5 || percent === 0 ? 0 : 1
+  return `${t('components.main.providers.successRate')}: ${percent.toFixed(decimals)}%`
+}
+
+const successRateClassName = (value: number) => {
+  const rate = clamp(value, 0, 1)
+  if (rate >= SUCCESS_RATE_THRESHOLDS.healthy) {
+    return 'success-good'
+  }
+  if (rate >= SUCCESS_RATE_THRESHOLDS.warning) {
+    return 'success-warn'
+  }
+  return 'success-bad'
+}
+
+const providerStatDisplay = (providerName: string): ProviderStatDisplay => {
   const tab = activeTab.value
   if (providerStatsLoading[tab]) {
-    return t('components.main.providers.loading')
+    return { state: 'loading', message: t('components.main.providers.loading') }
   }
   const stat = providerStatsMap[tab]?.[normalizeProviderKey(providerName)]
   if (!stat) {
-    return t('components.main.providers.noData')
+    return { state: 'empty', message: t('components.main.providers.noData') }
   }
   const totalTokens = stat.input_tokens + stat.output_tokens
-  const parts = [
-    `${t('components.main.providers.requests')}: ${formatMetric(stat.total_requests)}`,
-    `${t('components.main.providers.tokens')}: ${formatMetric(totalTokens)}`,
-    `${t('components.main.providers.cost')}: ${currencyFormatter.value.format(Math.max(stat.cost_total, 0))}`,
-  ]
-  return parts.join(' · ')
+  const successRateValue = Number.isFinite(stat.success_rate) ? clamp(stat.success_rate, 0, 1) : null
+  const successRateLabel = successRateValue !== null ? formatSuccessRateLabel(successRateValue) : ''
+  const successRateClass = successRateValue !== null ? successRateClassName(successRateValue) : ''
+  return {
+    state: 'ready',
+    requests: `${t('components.main.providers.requests')}: ${formatMetric(stat.total_requests)}`,
+    tokens: `${t('components.main.providers.tokens')}: ${formatMetric(totalTokens)}`,
+    cost: `${t('components.main.providers.cost')}: ${currencyFormatter.value.format(Math.max(stat.cost_total, 0))}`,
+    successRateLabel,
+    successRateClass,
+  }
 }
 
 const normalizeUrlWithScheme = (value: string) => {
