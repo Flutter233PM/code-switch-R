@@ -52,6 +52,7 @@ type UpdateService struct {
 	lastCheckTime    time.Time
 	checkFailures    int
 	updateReady      bool
+	isPortable       bool // 是否为便携版
 	mu               sync.Mutex
 	stateFile        string
 	updateDir        string
@@ -81,6 +82,7 @@ func NewUpdateService(currentVersion string) *UpdateService {
 	us := &UpdateService{
 		currentVersion:   currentVersion,
 		autoCheckEnabled: true, // 默认开启自动检查
+		isPortable:       detectPortableMode(),
 		updateDir:        updateDir,
 		stateFile:        stateFile,
 	}
@@ -91,7 +93,38 @@ func NewUpdateService(currentVersion string) *UpdateService {
 	// 加载状态（如果文件不存在，会保持默认值 true）
 	_ = us.LoadState()
 
+	log.Printf("[UpdateService] 运行模式: %s", func() string {
+		if us.isPortable {
+			return "便携版"
+		}
+		return "安装版"
+	}())
+
 	return us
+}
+
+// detectPortableMode 检测是否为便携版
+func detectPortableMode() bool {
+	if runtime.GOOS != "windows" {
+		return false // 非 Windows 默认不是便携版
+	}
+
+	exe, err := os.Executable()
+	if err != nil {
+		return false
+	}
+
+	exeDir := filepath.Dir(exe)
+
+	// 检测是否在 Program Files 或 AppData 目录（安装版特征）
+	lowerDir := strings.ToLower(exeDir)
+	if strings.Contains(lowerDir, "program files") ||
+		strings.Contains(lowerDir, "appdata") {
+		return false
+	}
+
+	// 否则认为是便携版
+	return true
 }
 
 // CheckUpdate 检查更新（带网络容错）
@@ -171,29 +204,42 @@ func (us *UpdateService) findPlatformAsset(assets []struct {
 	BrowserDownloadURL string `json:"browser_download_url"`
 	Size               int64  `json:"size"`
 }) string {
-	var platformSuffix string
+	var targetName string
 	switch runtime.GOOS {
 	case "windows":
-		platformSuffix = ".exe"
+		if us.isPortable {
+			// 便携版：查找 CodeSwitch.exe（不带 -installer）
+			targetName = "CodeSwitch.exe"
+		} else {
+			// 安装版：查找 CodeSwitch-amd64-installer.exe
+			targetName = "CodeSwitch-amd64-installer.exe"
+		}
 	case "darwin":
 		if runtime.GOARCH == "arm64" {
-			platformSuffix = "macos-arm64.zip"
+			targetName = "codeswitch-macos-arm64.zip"
 		} else {
-			platformSuffix = "macos-amd64.zip"
+			targetName = "codeswitch-macos-amd64.zip"
 		}
 	case "linux":
-		platformSuffix = ".AppImage"
+		targetName = "CodeSwitch.AppImage"
 	default:
 		return ""
 	}
 
+	// 精确匹配文件名
 	for _, asset := range assets {
-		if len(asset.Name) > len(platformSuffix) &&
-			asset.Name[len(asset.Name)-len(platformSuffix):] == platformSuffix {
+		if asset.Name == targetName {
+			log.Printf("[UpdateService] 找到更新文件: %s (模式: %s)", targetName, func() string {
+				if us.isPortable {
+					return "便携版"
+				}
+				return "安装版"
+			}())
 			return asset.BrowserDownloadURL
 		}
 	}
 
+	log.Printf("[UpdateService] 未找到适配文件 %s", targetName)
 	return ""
 }
 
@@ -350,14 +396,68 @@ func (us *UpdateService) ApplyUpdate() error {
 }
 
 // applyUpdateWindows Windows 平台更新
-func (us *UpdateService) applyUpdateWindows(installerPath string) error {
-	// 启动安装器（静默模式）
-	cmd := exec.Command(installerPath, "/SILENT")
+func (us *UpdateService) applyUpdateWindows(updatePath string) error {
+	if us.isPortable {
+		// 便携版：替换当前可执行文件
+		return us.applyPortableUpdate(updatePath)
+	}
+
+	// 安装版：启动安装器（静默模式）
+	cmd := exec.Command(updatePath, "/SILENT")
 	if err := cmd.Start(); err != nil {
 		return fmt.Errorf("启动安装器失败: %w", err)
 	}
 
 	// 退出当前应用
+	os.Exit(0)
+	return nil
+}
+
+// applyPortableUpdate 便携版更新逻辑
+func (us *UpdateService) applyPortableUpdate(newExePath string) error {
+	currentExe, err := os.Executable()
+	if err != nil {
+		return fmt.Errorf("获取当前可执行文件路径失败: %w", err)
+	}
+
+	// 解析符号链接（如果有）
+	currentExe, err = filepath.EvalSymlinks(currentExe)
+	if err != nil {
+		return fmt.Errorf("解析符号链接失败: %w", err)
+	}
+
+	log.Printf("[UpdateService] 便携版更新: %s -> %s", newExePath, currentExe)
+
+	// 备份旧文件
+	backupPath := currentExe + ".old"
+	if err := os.Rename(currentExe, backupPath); err != nil {
+		return fmt.Errorf("备份旧文件失败: %w", err)
+	}
+
+	// 复制新文件
+	if err := copyUpdateFile(newExePath, currentExe); err != nil {
+		// 恢复备份
+		_ = os.Rename(backupPath, currentExe)
+		return fmt.Errorf("复制新文件失败: %w", err)
+	}
+
+	log.Println("[UpdateService] 便携版更新成功，准备重启...")
+
+	// 删除备份（延迟删除，避免文件占用）
+	go func() {
+		time.Sleep(2 * time.Second)
+		_ = os.Remove(backupPath)
+	}()
+
+	// 重启应用
+	cmd := exec.Command(currentExe)
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
+	if err := cmd.Start(); err != nil {
+		return fmt.Errorf("重启应用失败: %w", err)
+	}
+
+	// 退出当前进程
 	os.Exit(0)
 	return nil
 }
