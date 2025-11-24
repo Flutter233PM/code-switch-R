@@ -42,6 +42,16 @@ func NewDeepLinkService(providerService *ProviderService) *DeepLinkService {
 	}
 }
 
+// Start Wails生命周期方法
+func (s *DeepLinkService) Start() error {
+	return nil
+}
+
+// Stop Wails生命周期方法
+func (s *DeepLinkService) Stop() error {
+	return nil
+}
+
 // ParseDeepLinkURL 解析 ccswitch:// URL
 // 预期格式: ccswitch://v1/import?resource=provider&app=claude&name=...&homepage=...&endpoint=...&apiKey=...
 func (s *DeepLinkService) ParseDeepLinkURL(urlStr string) (*DeepLinkImportRequest, error) {

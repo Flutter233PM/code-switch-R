@@ -25,6 +25,16 @@ func NewEnvCheckService() *EnvCheckService {
 	return &EnvCheckService{}
 }
 
+// Start Wails生命周期方法
+func (s *EnvCheckService) Start() error {
+	return nil
+}
+
+// Stop Wails生命周期方法
+func (s *EnvCheckService) Stop() error {
+	return nil
+}
+
 // CheckEnvConflicts 检查指定平台的环境变量冲突
 func (s *EnvCheckService) CheckEnvConflicts(app string) ([]EnvConflict, error) {
 	keywords := s.getKeywordsForApp(app)

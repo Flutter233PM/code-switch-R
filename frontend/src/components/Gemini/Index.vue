@@ -396,7 +396,10 @@ const submitModal = async () => {
   try {
     if (modalState.presetMode) {
       // 从预设创建
-      await CreateProviderFromPreset(modalState.presetName, modalState.form.apiKey)
+      const newProvider = await CreateProviderFromPreset(modalState.presetName, modalState.form.apiKey)
+      if (!newProvider) {
+        throw new Error('创建供应商失败')
+      }
     } else if (modalState.editing) {
       // 更新
       await UpdateProvider({

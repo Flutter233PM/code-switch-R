@@ -46,6 +46,16 @@ func NewPromptService() *PromptService {
 	return svc
 }
 
+// Start Wails生命周期方法
+func (s *PromptService) Start() error {
+	return nil
+}
+
+// Stop Wails生命周期方法
+func (s *PromptService) Stop() error {
+	return nil
+}
+
 // GetPrompts 获取指定平台的所有提示词
 func (s *PromptService) GetPrompts(platform string) (map[string]Prompt, error) {
 	s.mu.Lock()

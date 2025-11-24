@@ -115,6 +115,16 @@ func getGeminiPresets() []GeminiPreset {
 	}
 }
 
+// Start Wails生命周期方法
+func (s *GeminiService) Start() error {
+	return nil
+}
+
+// Stop Wails生命周期方法
+func (s *GeminiService) Stop() error {
+	return nil
+}
+
 // GetPresets 获取预设供应商列表
 func (s *GeminiService) GetPresets() []GeminiPreset {
 	return s.presets

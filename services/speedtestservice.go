@@ -30,6 +30,16 @@ func NewSpeedTestService() *SpeedTestService {
 	return &SpeedTestService{}
 }
 
+// Start Wails生命周期方法
+func (s *SpeedTestService) Start() error {
+	return nil
+}
+
+// Stop Wails生命周期方法
+func (s *SpeedTestService) Stop() error {
+	return nil
+}
+
 // TestEndpoints 测试一组端点的响应延迟
 // 使用并发请求，每个端点先进行一次热身请求，再测量第二次请求的延迟
 func (s *SpeedTestService) TestEndpoints(urls []string, timeoutSecs *int) []EndpointLatency {
