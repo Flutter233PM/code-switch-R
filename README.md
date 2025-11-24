@@ -1,89 +1,106 @@
 # Code Switch
 
-集中管理 Claude Code & Codex 供应商
+集中管理 Claude Code、Codex 和 Gemini CLI 的 AI 供应商配置
 
-- 无需重启 cc & codex, 平滑切换不同供应商
-- 支持多供应商自动降级, 保证使用体验
-- 支持请求级别的用量统计, 花费多少清晰可见
-- 支持 cc & codex Mcp Server 双平台管理
-- 支持 Claude Skill 自动下载与安装, 内置 2 个流行的 skill 仓库
-- 支持添加自定义 Skill 仓库
+## 核心功能
 
-基于 [Wails 3](https://v3.wails.io)
+- **平滑切换供应商** - 无需重启 Claude Code/Codex/Gemini CLI，实时切换不同供应商
+- **智能降级机制** - 支持多供应商分级优先级调度（Level 1-10），自动故障转移
+- **用量统计追踪** - 请求级别的 Token 用量统计和成本核算
+- **MCP 服务器管理** - Claude Code 和 Codex 双平台 MCP Server 集中配置
+- **技能市场** - Claude Skill 自动下载与安装，内置热门技能仓库
+- **Gemini CLI 管理** - 支持 Google OAuth、API Key、PackyCode 等多种认证方式
+- **深度链接导入** - 通过 ccswitch:// 协议一键导入供应商配置
+- **速度测试** - 并发测试供应商端点延迟，优化选择
+- **自定义提示词** - 管理 Claude/Codex/Gemini 的系统提示词
+- **环境变量检测** - 自动检测并提示环境变量冲突
 
-## 实现原理
+## 下载安装
 
-应用启动时会初始化 在本地 18100 端口创建一个 HTTP 代理服务器, 默认绑定 :18100
+[最新版本下载](https://github.com/Rogers-F/code-switch-R/releases)
 
-并自动更新 Claude Code、Codex 配置, 指向 http://127.0.0.1:18100 服务
+- **Windows**: 下载 `CodeSwitch-amd64-installer.exe` 运行安装，或下载 `CodeSwitch.exe` 便携版
+- **macOS (Apple Silicon)**: 下载 `codeswitch-macos-arm64.zip`，解压后拖入 Applications
+- **macOS (Intel)**: 下载 `codeswitch-macos-amd64.zip`，解压后拖入 Applications
 
-代理内部只暴露兼容的关键端点：
+## 工作原理
 
-- /v1/messages 转发到配置的 Claude 供应商
-- /responses 转发到 Codex 供应商；
+应用启动时在本地 `:18100` 端口创建 HTTP 代理服务器，并自动配置 Claude Code 和 Codex 指向该代理。
 
-请求由 proxyHandler 动态挑选符合当前优先级与启用状态的 provider，并在失败时自动回退。
+代理暴露两个关键端点：
+- `/v1/messages` → 转发到 Claude 供应商
+- `/responses` → 转发到 Codex 供应商
 
-以上流程让 cli 看到的是一个固定的本地地址，而真实请求会被 Code Switch 透明地路由到你在应用里维护的供应商列表
+请求由 `proxyHandler` 基于优先级分组动态选择 Provider：
+1. 优先尝试 Level 1（最高优先级）的所有供应商
+2. 失败后依次尝试 Level 2、Level 3 等
+3. 同一 Level 内按用户排序依次尝试
 
-## 下载
+这让 CLI 看到的是固定的本地地址，而请求被透明路由到你配置的供应商列表。
 
-[macOS](https://github.com/daodao97/code-swtich/releases) | [windows](https://github.com/daodao97/code-swtich/releases) 
+## 界面预览
 
-
-## 预览
 ![亮色主界面](resources/images/code-switch.png)
 ![暗色主界面](resources/images/code-swtich-dark.png)
 ![日志亮色](resources/images/code-switch-logs.png)
 ![日志暗色](resources/images/code-switch-logs-dark.png)
 
-## 开发准备
+## 开发指南
+
+### 环境要求
 - Go 1.24+
 - Node.js 18+
-- npm / pnpm / yarn
-- Wails 3 CLI：`go install github.com/wailsapp/wails/v3/cmd/wails3@latest`
+- Wails 3 CLI: `go install github.com/wailsapp/wails/v3/cmd/wails3@latest`
 
-## 开发运行
+### 开发运行
 ```bash
 wails3 task dev
 ```
 
-## 构建流程
-1. 同步 build metadata：
-   ```bash
-   wails3 task common:update:build-assets
-   ```
-2. 打包 macOS `.app`：
-   ```bash
-   wails3 task package
-   ```
+### 构建
 
-### 交叉编译 Windows (macOS 环境)
-1. 安装 `mingw-w64`：
-   ```bash
-   brew install mingw-w64
-   ```
-2. 运行 Windows 任务：
-   ```bash
-   env ARCH=amd64 wails3 task windows:build
-   # 生成安装器
-   env ARCH=amd64 wails3 task windows:package
-   ```
-
-## 发布
-脚本 `scripts/publish_release.sh v0.1.0` 将自动打包并上传以下资产（macOS 会分别构建 arm64 与 amd64）：
-- `codeswitch-macos-arm64.zip`
-- `codeswitch-macos-amd64.zip`
-- `codeswitch-arm64-installer.exe`
-- `codeswitch.exe`
-
-若要手动发布，可执行：
 ```bash
+# 更新构建元数据
+wails3 task common:update:build-assets
+
+# 打包当前平台
 wails3 task package
-env ARCH=amd64 wails3 task windows:package
-scripts/publish_release.sh
 ```
 
+### 交叉编译 Windows (macOS)
+
+```bash
+brew install mingw-w64
+env ARCH=amd64 wails3 task windows:build
+env ARCH=amd64 wails3 task windows:package
+```
+
+## 发布
+
+推送 tag 即可触发 GitHub Actions 自动构建：
+
+```bash
+git tag v1.0.0
+git push origin v1.0.0
+```
+
+自动构建产物：
+- `codeswitch-macos-arm64.zip`
+- `codeswitch-macos-amd64.zip`
+- `CodeSwitch-amd64-installer.exe`
+- `CodeSwitch.exe`
+
 ## 常见问题
-- 若 `.app` 无法打开，先执行 `wails3 task common:update:build-assets` 后再构建。
-- macOS 交叉编译需要终端拥有完全磁盘访问权限，否则 `~/Library/Caches/go-build` 会报 *operation not permitted*。
+
+- **macOS 无法打开 .app**: 先执行 `wails3 task common:update:build-assets` 再构建
+- **交叉编译权限问题**: macOS 终端需要完全磁盘访问权限
+
+## 技术栈
+
+- **后端**: Go 1.24 + Gin + SQLite
+- **前端**: Vue 3 + TypeScript + Tailwind CSS
+- **框架**: [Wails 3](https://v3.wails.io)
+
+## License
+
+MIT
