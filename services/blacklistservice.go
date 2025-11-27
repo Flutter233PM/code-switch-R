@@ -541,6 +541,7 @@ func (bs *BlacklistService) ManualResetLevel(platform string, providerName strin
 }
 
 // AutoRecoverExpired 自动恢复过期的黑名单（由定时器调用）
+// 使用事务批量处理，避免多次单独写入导致的并发锁冲突
 func (bs *BlacklistService) AutoRecoverExpired() error {
 	db, err := xdb.DB("default")
 	if err != nil {
@@ -561,8 +562,13 @@ func (bs *BlacklistService) AutoRecoverExpired() error {
 	defer rows.Close()
 
 	now := time.Now()
-	var recovered []string
+	type RecoverItem struct {
+		Platform     string
+		ProviderName string
+	}
+	var toRecover []RecoverItem
 
+	// 收集所有需要恢复的 provider
 	for rows.Next() {
 		var platform, providerName string
 		var blacklistedUntil sql.NullTime
@@ -577,40 +583,54 @@ func (bs *BlacklistService) AutoRecoverExpired() error {
 			continue // 未过期，跳过
 		}
 
-		// 标记为已恢复（保留历史记录），使用重试机制避免 SQLITE_BUSY
-		var updateErr error
-		for retry := 0; retry < 3; retry++ {
-			_, updateErr = db.Exec(`
-				UPDATE provider_blacklist
-				SET auto_recovered = 1, failure_count = 0
-				WHERE platform = ? AND provider_name = ?
-			`, platform, providerName)
+		toRecover = append(toRecover, RecoverItem{
+			Platform:     platform,
+			ProviderName: providerName,
+		})
+	}
 
-			if updateErr == nil {
-				break // 成功，跳出重试循环
-			}
+	// 如果没有需要恢复的，直接返回
+	if len(toRecover) == 0 {
+		return nil
+	}
 
-			// 如果是SQLITE_BUSY错误，等待后重试
-			if strings.Contains(updateErr.Error(), "SQLITE_BUSY") || strings.Contains(updateErr.Error(), "database is locked") {
-				time.Sleep(time.Duration(50*(retry+1)) * time.Millisecond) // 50ms, 100ms, 150ms
-				continue
-			}
+	// 使用事务批量更新，避免多次单独写入导致的锁冲突
+	tx, err := db.Begin()
+	if err != nil {
+		return fmt.Errorf("开启事务失败: %w", err)
+	}
 
-			// 其他错误直接退出
-			break
+	var recovered []string
+	var failed []string
+
+	// 批量更新所有过期的 provider
+	for _, item := range toRecover {
+		_, err := tx.Exec(`
+			UPDATE provider_blacklist
+			SET auto_recovered = 1, failure_count = 0
+			WHERE platform = ? AND provider_name = ?
+		`, item.Platform, item.ProviderName)
+
+		if err != nil {
+			failed = append(failed, fmt.Sprintf("%s/%s", item.Platform, item.ProviderName))
+			log.Printf("⚠️  标记恢复状态失败: %s/%s - %v", item.Platform, item.ProviderName, err)
+		} else {
+			recovered = append(recovered, fmt.Sprintf("%s/%s", item.Platform, item.ProviderName))
 		}
+	}
 
-		if updateErr != nil {
-			// 失败不影响主流程，下次定时器会再试
-			log.Printf("⚠️  标记恢复状态失败（已重试3次）: %s/%s - %v，将在下次定时器重试", platform, providerName, updateErr)
-			continue
-		}
-
-		recovered = append(recovered, fmt.Sprintf("%s/%s", platform, providerName))
+	// 提交事务（一次性提交所有更新）
+	if err := tx.Commit(); err != nil {
+		log.Printf("⚠️  提交恢复事务失败: %v，所有更新已回滚", err)
+		return fmt.Errorf("提交事务失败: %w", err)
 	}
 
 	if len(recovered) > 0 {
 		log.Printf("✅ 自动恢复 %d 个过期拉黑: %v", len(recovered), recovered)
+	}
+
+	if len(failed) > 0 {
+		log.Printf("⚠️  恢复失败 %d 个: %v", len(failed), failed)
 	}
 
 	return nil

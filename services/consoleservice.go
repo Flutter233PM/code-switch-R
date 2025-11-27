@@ -114,6 +114,30 @@ func (cs *ConsoleService) addLog(level, message string) {
 	if len(cs.logs) > cs.maxLogs {
 		cs.logs = cs.logs[len(cs.logs)-cs.maxLogs:]
 	}
+
+	// 清理3天前的日志
+	cs.cleanOldLogs()
+}
+
+// cleanOldLogs 清理3天前的日志
+func (cs *ConsoleService) cleanOldLogs() {
+	// 无需加锁，因为调用者 addLog 已经加锁
+	threeDaysAgo := time.Now().Add(-72 * time.Hour)
+
+	// 找到第一个在3天内的日志索引
+	cutoffIndex := 0
+	for i, log := range cs.logs {
+		if log.Timestamp.After(threeDaysAgo) {
+			cutoffIndex = i
+			break
+		}
+	}
+
+	// 如果有旧日志需要清理
+	if cutoffIndex > 0 {
+		cs.logs = cs.logs[cutoffIndex:]
+		fmt.Printf("[ConsoleService] 清理了 %d 条超过3天的日志\n", cutoffIndex)
+	}
 }
 
 // GetLogs 获取所有日志
