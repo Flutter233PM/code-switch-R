@@ -2,7 +2,7 @@
 import { computed, ref, onMounted, watch } from 'vue'
 import { useRouter, useRoute } from 'vue-router'
 import { useI18n } from 'vue-i18n'
-import { fetchCurrentVersion } from '@/services/version'
+import { fetchCurrentVersion } from '../services/version'
 
 const router = useRouter()
 const route = useRoute()
