@@ -71,7 +71,10 @@ func (as *AutoStartService) enableWindows() error {
 	}
 
 	key := `HKCU\Software\Microsoft\Windows\CurrentVersion\Run`
-	cmd := exec.Command("reg", "add", key, "/v", "CodeSwitch", "/t", "REG_SZ", "/d", exePath, "/f")
+	// 【修复】路径需要用双引号包裹，防止路径中含空格时解析失败
+	// 例如：C:\Program Files\CodeSwitch\CodeSwitch.exe
+	quotedPath := fmt.Sprintf(`"%s"`, exePath)
+	cmd := exec.Command("reg", "add", key, "/v", "CodeSwitch", "/t", "REG_SZ", "/d", quotedPath, "/f")
 	if err := cmd.Run(); err != nil {
 		return fmt.Errorf("failed to add registry key: %w", err)
 	}

@@ -63,10 +63,25 @@ func (a *AppService) OpenSecondWindow() {
 func main() {
 	appservice := &AppService{}
 
+	// 【修复】第一步：初始化数据库（必须最先执行）
+	// 解决问题：InitGlobalDBQueue 依赖 xdb.DB("default")，但 xdb.Inits() 在 NewProviderRelayService 中
+	if err := services.InitDatabase(); err != nil {
+		log.Fatalf("数据库初始化失败: %v", err)
+	}
+	log.Println("✅ 数据库已初始化")
+
+	// 【修复】第二步：初始化写入队列（依赖数据库连接）
+	if err := services.InitGlobalDBQueue(); err != nil {
+		log.Fatalf("初始化数据库队列失败: %v", err)
+	}
+	log.Println("✅ 数据库写入队列已启动")
+
+	// 【修复】第三步：创建服务（现在可以安全使用数据库了）
 	suiService, errt := services.NewSuiStore()
 	if errt != nil {
-		// 处理错误，比如日志或退出
+		log.Fatalf("SuiStore 初始化失败: %v", errt)
 	}
+
 	providerService := services.NewProviderService()
 	settingsService := services.NewSettingsService()
 	blacklistService := services.NewBlacklistService(settingsService)
@@ -166,6 +181,21 @@ func main() {
 
 	app.OnShutdown(func() {
 		_ = providerRelay.Stop()
+
+		// 优雅关闭数据库写入队列（10秒超时，双队列架构）
+		if err := services.ShutdownGlobalDBQueue(10 * time.Second); err != nil {
+			log.Printf("⚠️ 队列关闭超时: %v", err)
+		} else {
+			// 单次队列统计
+			stats1 := services.GetGlobalDBQueueStats()
+			log.Printf("✅ 单次队列已关闭，统计：成功=%d 失败=%d 平均延迟=%.2fms",
+				stats1.SuccessWrites, stats1.FailedWrites, stats1.AvgLatencyMs)
+
+			// 批量队列统计
+			stats2 := services.GetGlobalDBQueueLogsStats()
+			log.Printf("✅ 批量队列已关闭，统计：成功=%d 失败=%d 平均延迟=%.2fms（批均分） 批次=%d",
+				stats2.SuccessWrites, stats2.FailedWrites, stats2.AvgLatencyMs, stats2.BatchCommits)
+		}
 	})
 
 	// Create a new window with the necessary options.

@@ -23,8 +23,8 @@ type BlacklistLevelConfig struct {
 	EnableLevelBlacklist bool `json:"enableLevelBlacklist"` // 是否启用等级拉黑
 
 	// 基础配置
-	FailureThreshold     int     `json:"failureThreshold"`     // 失败阈值（连续失败次数）
-	DedupeWindowSeconds  int     `json:"dedupeWindowSeconds"`  // 去重窗口（秒）
+	FailureThreshold    int `json:"failureThreshold"`    // 失败阈值（连续失败次数）
+	DedupeWindowSeconds int `json:"dedupeWindowSeconds"` // 去重窗口（秒）
 
 	// 降级配置
 	NormalDegradeIntervalHours float64 `json:"normalDegradeIntervalHours"` // 正常降级间隔（小时）
@@ -134,17 +134,12 @@ func (ss *SettingsService) IsBlacklistEnabled() bool {
 
 // UpdateBlacklistEnabled 更新拉黑功能开关
 func (ss *SettingsService) UpdateBlacklistEnabled(enabled bool) error {
-	db, err := xdb.DB("default")
-	if err != nil {
-		return fmt.Errorf("获取数据库连接失败: %w", err)
-	}
-
 	enabledStr := "false"
 	if enabled {
 		enabledStr = "true"
 	}
 
-	_, err = db.Exec(`
+	err := GlobalDBQueue.Exec(`
 		UPDATE app_settings SET value = ? WHERE key = 'enable_blacklist'
 	`, enabledStr)
 
@@ -157,12 +152,8 @@ func (ss *SettingsService) UpdateBlacklistEnabled(enabled bool) error {
 }
 
 // UpdateBlacklistSettings 更新黑名单配置
+// 使用 Saga 模式保证数据一致性（因队列无法使用事务）
 func (ss *SettingsService) UpdateBlacklistSettings(threshold int, duration int) error {
-	db, err := xdb.DB("default")
-	if err != nil {
-		return fmt.Errorf("获取数据库连接失败: %w", err)
-	}
-
 	// 验证参数
 	if threshold < 1 || threshold > 9 {
 		return fmt.Errorf("失败阈值必须在 1-9 之间")
@@ -172,15 +163,20 @@ func (ss *SettingsService) UpdateBlacklistSettings(threshold int, duration int) 
 		return fmt.Errorf("拉黑时长只支持 5/15/30/60 分钟")
 	}
 
-	// 开启事务
-	tx, err := db.Begin()
+	// Saga 步骤 1：读取旧值（用于回滚）
+	db, err := xdb.DB("default")
 	if err != nil {
-		return fmt.Errorf("开启事务失败: %w", err)
+		return fmt.Errorf("获取数据库连接失败: %w", err)
 	}
-	defer tx.Rollback()
 
-	// 更新失败阈值
-	_, err = tx.Exec(`
+	var oldThresholdStr string
+	err = db.QueryRow(`SELECT value FROM app_settings WHERE key = 'blacklist_failure_threshold'`).Scan(&oldThresholdStr)
+	if err != nil {
+		return fmt.Errorf("读取旧失败阈值失败: %w", err)
+	}
+
+	// Saga 步骤 2：尝试第一次写入
+	err = GlobalDBQueue.Exec(`
 		UPDATE app_settings SET value = ? WHERE key = 'blacklist_failure_threshold'
 	`, strconv.Itoa(threshold))
 
@@ -188,18 +184,22 @@ func (ss *SettingsService) UpdateBlacklistSettings(threshold int, duration int) 
 		return fmt.Errorf("更新失败阈值失败: %w", err)
 	}
 
-	// 更新拉黑时长
-	_, err = tx.Exec(`
+	// Saga 步骤 3：尝试第二次写入
+	err = GlobalDBQueue.Exec(`
 		UPDATE app_settings SET value = ? WHERE key = 'blacklist_duration_minutes'
 	`, strconv.Itoa(duration))
 
 	if err != nil {
-		return fmt.Errorf("更新拉黑时长失败: %w", err)
-	}
+		// 第二次失败，回滚第一次（补偿逻辑）
+		rollbackErr := GlobalDBQueue.Exec(`
+			UPDATE app_settings SET value = ? WHERE key = 'blacklist_failure_threshold'
+		`, oldThresholdStr)
 
-	// 提交事务
-	if err = tx.Commit(); err != nil {
-		return fmt.Errorf("提交事务失败: %w", err)
+		if rollbackErr != nil {
+			return fmt.Errorf("更新拉黑时长失败且回滚失败: %w (原始错误: %v)", rollbackErr, err)
+		}
+
+		return fmt.Errorf("更新拉黑时长失败，已回滚失败阈值: %w", err)
 	}
 
 	return nil
@@ -240,18 +240,13 @@ func (ss *SettingsService) GetLevelBlacklistEnabled() (bool, error) {
 
 // SetLevelBlacklistEnabled 设置等级拉黑开关状态
 func (ss *SettingsService) SetLevelBlacklistEnabled(enabled bool) error {
-	db, err := xdb.DB("default")
-	if err != nil {
-		return fmt.Errorf("获取数据库连接失败: %w", err)
-	}
-
 	enabledStr := "false"
 	if enabled {
 		enabledStr = "true"
 	}
 
 	// 使用 UPSERT 模式：如果存在则更新，不存在则插入
-	_, err = db.Exec(`
+	err := GlobalDBQueue.Exec(`
 		INSERT INTO app_settings (key, value) VALUES ('blacklist_level_enabled', ?)
 		ON CONFLICT(key) DO UPDATE SET value = excluded.value
 	`, enabledStr)

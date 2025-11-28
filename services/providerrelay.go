@@ -7,8 +7,6 @@ import (
 	"fmt"
 	"io"
 	"net/http"
-	"os"
-	"path/filepath"
 	"sort"
 	"strings"
 	"time"
@@ -18,7 +16,6 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/tidwall/gjson"
 	"github.com/tidwall/sjson"
-	_ "modernc.org/sqlite"
 )
 
 type ProviderRelayService struct {
@@ -31,39 +28,11 @@ type ProviderRelayService struct {
 
 func NewProviderRelayService(providerService *ProviderService, geminiService *GeminiService, blacklistService *BlacklistService, addr string) *ProviderRelayService {
 	if addr == "" {
-		addr = ":18100"
+		addr = "127.0.0.1:18100" // 【安全修复】仅监听本地回环地址，防止 API Key 暴露到局域网
 	}
 
-	home, _ := os.UserHomeDir()
-
-	if err := xdb.Inits([]xdb.Config{
-		{
-			Name:   "default",
-			Driver: "sqlite",
-			DSN:    filepath.Join(home, ".code-switch", "app.db?cache=shared&mode=rwc&_busy_timeout=10000&_journal_mode=WAL"),
-		},
-	}); err != nil {
-		fmt.Printf("初始化数据库失败: %v\n", err)
-	} else {
-		if err := ensureRequestLogTable(); err != nil {
-			fmt.Printf("初始化 request_log 表失败: %v\n", err)
-		}
-		if err := ensureBlacklistTables(); err != nil {
-			fmt.Printf("初始化黑名单表失败: %v\n", err)
-		}
-
-		// 预热连接池：强制建立数据库连接，避免首次写入时失败
-		// 解决问题：首次启动时 xdb 连接池未完全初始化导致写入失败
-		db, err := xdb.DB("default")
-		if err == nil && db != nil {
-			var count int
-			if err := db.QueryRow("SELECT COUNT(*) FROM request_log").Scan(&count); err != nil {
-				fmt.Printf("⚠️  连接池预热查询失败: %v\n", err)
-			} else {
-				fmt.Printf("✅ 数据库连接已预热（request_log 记录数: %d）\n", count)
-			}
-		}
-	}
+	// 【修复】数据库初始化已移至 main.go 的 InitDatabase()
+	// 此处不再调用 xdb.Inits()、ensureRequestLogTable()、ensureBlacklistTables()
 
 	return &ProviderRelayService{
 		providerService:  providerService,
@@ -259,67 +228,98 @@ func (prs *ProviderRelayService) proxyHandler(kind string, endpoint string) gin.
 		}
 		sort.Ints(levels)
 
-		// 取第一个 Level 的第一个 provider（最高优先级）
-		firstLevel := levels[0]
-		firstProvider := levelGroups[firstLevel][0]
-
-		fmt.Printf("[INFO] 选择 Provider: %s (Level %d) | 可用备选: %d 个 provider 分布在 %d 个 Level\n",
-			firstProvider.Name, firstLevel, len(active), len(levels))
+		fmt.Printf("[INFO] 共 %d 个 Level 分组：%v\n", len(levels), levels)
 
 		query := flattenQuery(c.Request.URL.Query())
 		clientHeaders := cloneHeaders(c.Request.Header)
 
-		// 获取实际应该使用的模型名
-		effectiveModel := firstProvider.GetEffectiveModel(requestedModel)
+		// 【修复】实现完整的故障切换逻辑：
+		// 1. 按 Level 升序遍历（Level 1 → Level 2 → ...）
+		// 2. 同一 Level 内按顺序尝试每个 provider
+		// 3. 任意一个成功即返回，失败则尝试下一个
+		// 4. 所有 provider 都失败才返回 502
 
-		// 如果需要映射，修改请求体
-		currentBodyBytes := bodyBytes
-		if effectiveModel != requestedModel && requestedModel != "" {
-			fmt.Printf("[INFO] Provider %s 映射模型: %s -> %s\n", firstProvider.Name, requestedModel, effectiveModel)
+		var lastError error
+		var lastProvider string
+		var lastDuration time.Duration
+		totalAttempts := 0
 
-			modifiedBody, err := ReplaceModelInRequestBody(bodyBytes, effectiveModel)
-			if err != nil {
-				fmt.Printf("[ERROR] 替换模型名失败: %v\n", err)
-				c.JSON(http.StatusInternalServerError, gin.H{"error": fmt.Sprintf("模型映射失败: %v", err)})
-				return
+		for _, level := range levels {
+			providersInLevel := levelGroups[level]
+			fmt.Printf("[INFO] === 尝试 Level %d（%d 个 provider）===\n", level, len(providersInLevel))
+
+			for i, provider := range providersInLevel {
+				totalAttempts++
+
+				// 获取实际应该使用的模型名
+				effectiveModel := provider.GetEffectiveModel(requestedModel)
+
+				// 如果需要映射，修改请求体
+				currentBodyBytes := bodyBytes
+				if effectiveModel != requestedModel && requestedModel != "" {
+					fmt.Printf("[INFO] Provider %s 映射模型: %s -> %s\n", provider.Name, requestedModel, effectiveModel)
+
+					modifiedBody, err := ReplaceModelInRequestBody(bodyBytes, effectiveModel)
+					if err != nil {
+						fmt.Printf("[ERROR] 替换模型名失败: %v\n", err)
+						// 映射失败不应阻止尝试其他 provider
+						continue
+					}
+					currentBodyBytes = modifiedBody
+				}
+
+				fmt.Printf("[INFO]   [%d/%d] Provider: %s | Model: %s\n", i+1, len(providersInLevel), provider.Name, effectiveModel)
+
+				// 尝试发送请求
+				startTime := time.Now()
+				ok, err := prs.forwardRequest(c, kind, provider, endpoint, query, clientHeaders, currentBodyBytes, isStream, effectiveModel)
+				duration := time.Since(startTime)
+
+				if ok {
+					fmt.Printf("[INFO]   ✓ Level %d 成功: %s | 耗时: %.2fs\n", level, provider.Name, duration.Seconds())
+
+					// 成功：清零连续失败计数
+					if err := prs.blacklistService.RecordSuccess(kind, provider.Name); err != nil {
+						fmt.Printf("[WARN] 清零失败计数失败: %v\n", err)
+					}
+
+					return // 成功，立即返回
+				}
+
+				// 失败：记录错误并尝试下一个
+				lastError = err
+				lastProvider = provider.Name
+				lastDuration = duration
+
+				errorMsg := "未知错误"
+				if err != nil {
+					errorMsg = err.Error()
+				}
+				fmt.Printf("[WARN]   ✗ Level %d 失败: %s | 错误: %s | 耗时: %.2fs\n",
+					level, provider.Name, errorMsg, duration.Seconds())
+
+				// 记录失败到黑名单系统
+				if err := prs.blacklistService.RecordFailure(kind, provider.Name); err != nil {
+					fmt.Printf("[ERROR] 记录失败到黑名单失败: %v\n", err)
+				}
 			}
-			currentBodyBytes = modifiedBody
+
+			fmt.Printf("[WARN] Level %d 的所有 %d 个 provider 均失败，尝试下一 Level\n", level, len(providersInLevel))
 		}
 
-		// 尝试发送请求
-		startTime := time.Now()
-		ok, err := prs.forwardRequest(c, kind, firstProvider, endpoint, query, clientHeaders, currentBodyBytes, isStream, effectiveModel)
-		duration := time.Since(startTime)
-
-		if ok {
-			fmt.Printf("[INFO] ✓ 成功: %s (Level %d) | 耗时: %.2fs\n", firstProvider.Name, firstLevel, duration.Seconds())
-
-			// 成功：清零连续失败计数
-			if err := prs.blacklistService.RecordSuccess(kind, firstProvider.Name); err != nil {
-				fmt.Printf("[WARN] 清零失败计数失败: %v\n", err)
-			}
-
-			return
-		}
-
-		// 失败：记录到黑名单并返回错误
+		// 所有 provider 都失败，返回 502
 		errorMsg := "未知错误"
-		if err != nil {
-			errorMsg = err.Error()
+		if lastError != nil {
+			errorMsg = lastError.Error()
 		}
-		fmt.Printf("[ERROR] ✗ 失败: %s (Level %d) | 错误: %s | 耗时: %.2fs\n",
-			firstProvider.Name, firstLevel, errorMsg, duration.Seconds())
+		fmt.Printf("[ERROR] 所有 %d 个 provider 均失败，最后尝试: %s | 错误: %s\n",
+			totalAttempts, lastProvider, errorMsg)
 
-		// 记录失败到黑名单系统
-		if err := prs.blacklistService.RecordFailure(kind, firstProvider.Name); err != nil {
-			fmt.Printf("[ERROR] 记录失败到黑名单失败: %v\n", err)
-		}
-
-		// 直接返回 502，不尝试其他 provider
 		c.JSON(http.StatusBadGateway, gin.H{
-			"error":    fmt.Sprintf("Provider %s 请求失败: %s", firstProvider.Name, errorMsg),
-			"provider": firstProvider.Name,
-			"duration": fmt.Sprintf("%.2fs", duration.Seconds()),
+			"error":         fmt.Sprintf("所有 %d 个 provider 均失败，最后错误: %s", totalAttempts, errorMsg),
+			"last_provider": lastProvider,
+			"last_duration": fmt.Sprintf("%.2fs", lastDuration.Seconds()),
+			"total_attempts": totalAttempts,
 		})
 	}
 }
@@ -352,14 +352,17 @@ func (prs *ProviderRelayService) forwardRequest(
 	defer func() {
 		requestLog.DurationSec = time.Since(start).Seconds()
 
-		// 使用原生数据库连接，避免 xdb.New() 的事务封装导致嵌套事务错误
-		db, err := xdb.DB("default")
-		if err != nil {
-			fmt.Printf("写入 request_log 失败: 获取数据库连接失败: %v\n", err)
+		// 【修复】判空保护：避免队列未初始化时 panic
+		if GlobalDBQueueLogs == nil {
+			fmt.Printf("⚠️  写入 request_log 失败: 队列未初始化\n")
 			return
 		}
 
-		_, err = db.Exec(`
+		// 使用批量队列写入 request_log（高频同构操作，批量提交）
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+
+		err := GlobalDBQueueLogs.ExecBatchCtx(ctx, `
 			INSERT INTO request_log (
 				platform, model, provider, http_code,
 				input_tokens, output_tokens, cache_create_tokens, cache_read_tokens,
@@ -679,19 +682,38 @@ func (prs *ProviderRelayService) geminiProxyHandler(apiVersion string) gin.Handl
 		start := time.Now()
 		defer func() {
 			requestLog.DurationSec = time.Since(start).Seconds()
-			if _, err := xdb.New("request_log").Insert(xdb.Record{
-				"platform":            requestLog.Platform,
-				"model":               requestLog.Model,
-				"provider":            requestLog.Provider,
-				"http_code":           requestLog.HttpCode,
-				"input_tokens":        requestLog.InputTokens,
-				"output_tokens":       requestLog.OutputTokens,
-				"cache_create_tokens": requestLog.CacheCreateTokens,
-				"cache_read_tokens":   requestLog.CacheReadTokens,
-				"reasoning_tokens":    requestLog.ReasoningTokens,
-				"is_stream":           boolToInt(requestLog.IsStream),
-				"duration_sec":        requestLog.DurationSec,
-			}); err != nil {
+
+			// 【修复】判空保护：避免队列未初始化时 panic
+			if GlobalDBQueueLogs == nil {
+				fmt.Printf("[Gemini] ⚠️  写入 request_log 失败: 队列未初始化\n")
+				return
+			}
+
+			// 使用批量队列写入 request_log（高频同构操作，批量提交）
+			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cancel()
+
+			err := GlobalDBQueueLogs.ExecBatchCtx(ctx, `
+				INSERT INTO request_log (
+					platform, model, provider, http_code,
+					input_tokens, output_tokens, cache_create_tokens, cache_read_tokens,
+					reasoning_tokens, is_stream, duration_sec
+				) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+			`,
+				requestLog.Platform,
+				requestLog.Model,
+				requestLog.Provider,
+				requestLog.HttpCode,
+				requestLog.InputTokens,
+				requestLog.OutputTokens,
+				requestLog.CacheCreateTokens,
+				requestLog.CacheReadTokens,
+				requestLog.ReasoningTokens,
+				boolToInt(requestLog.IsStream),
+				requestLog.DurationSec,
+			)
+
+			if err != nil {
 				fmt.Printf("[Gemini] 写入 request_log 失败: %v\n", err)
 			}
 		}()
