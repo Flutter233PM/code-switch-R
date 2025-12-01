@@ -122,6 +122,25 @@ jobs:
           makensis -DARG_WAILS_AMD64_BINARY="$binaryPath" project.nsi
           Pop-Location
 
+      - name: Build Updater
+        run: |
+          go install github.com/akavel/rsrc@latest
+          rsrc -manifest cmd/updater/updater.exe.manifest -o cmd/updater/rsrc_windows_amd64.syso
+          $env:GOOS = "windows"
+          $env:GOARCH = "amd64"
+          $env:CGO_ENABLED = "0"
+          go build -ldflags="-w -s -H windowsgui" -o bin/updater.exe ./cmd/updater
+          Remove-Item cmd/updater/*.syso -ErrorAction SilentlyContinue
+
+      - name: Generate SHA256 Checksums
+        run: |
+          Push-Location bin
+          Get-FileHash -Algorithm SHA256 CodeSwitch.exe | ForEach-Object { "$($_.Hash.ToLower())  CodeSwitch.exe" } | Out-File -Encoding ascii CodeSwitch.exe.sha256
+          Get-FileHash -Algorithm SHA256 updater.exe | ForEach-Object { "$($_.Hash.ToLower())  updater.exe" } | Out-File -Encoding ascii updater.exe.sha256
+          Write-Host "SHA256 checksums generated:"
+          Get-Content *.sha256
+          Pop-Location
+
       - name: Upload artifacts
         uses: actions/upload-artifact@v4
         with:
@@ -129,6 +148,9 @@ jobs:
           path: |
             bin/CodeSwitch-amd64-installer.exe
             bin/CodeSwitch.exe
+            bin/CodeSwitch.exe.sha256
+            bin/updater.exe
+            bin/updater.exe.sha256
 
   create-release:
     name: Create Release
@@ -152,6 +174,9 @@ jobs:
           cp artifacts/macos-amd64/codeswitch-macos-amd64.zip release-assets/
           cp artifacts/windows-amd64/CodeSwitch-amd64-installer.exe release-assets/
           cp artifacts/windows-amd64/CodeSwitch.exe release-assets/
+          cp artifacts/windows-amd64/CodeSwitch.exe.sha256 release-assets/
+          cp artifacts/windows-amd64/updater.exe release-assets/
+          cp artifacts/windows-amd64/updater.exe.sha256 release-assets/
           ls -lh release-assets/
 
       - name: Create Release
@@ -159,23 +184,35 @@ jobs:
         with:
           files: release-assets/*
           body: |
-            ## 🐛 Bug 修复
+            ## ✨ 新功能
 
-            ### 修复 SQLite SQLITE_BUSY 数据库锁死问题
-            - **问题**：Gemini 请求日志写入和黑名单自动恢复操作频繁出现 `database is locked (5) (SQLITE_BUSY)` 错误
-            - **原因**：DSN 参数 `_journal_mode=WAL` 和 `_busy_timeout` 未被 `modernc.org/sqlite` 驱动正确解析
-            - **修复**：
-              - 显式执行 `PRAGMA journal_mode = WAL`（启用 WAL 模式，允许读写并发）
-              - 显式执行 `PRAGMA busy_timeout = 30000`（30 秒等待，避免立即返回错误）
-              - 启动时输出日志确认 PRAGMA 设置生效
+            ### Windows 安装版静默更新
+            - **无界面更新**：安装版更新时不再弹出安装器界面，仅需一次 UAC 确认
+            - **下载量优化**：从下载完整安装器 (~15MB) 改为仅下载核心程序 (~10MB)
+            - **安全校验**：新增 SHA256 哈希校验，确保下载文件完整性
+            - **智能恢复**：启动时自动检测并恢复失败的更新，防止更新崩溃导致程序损坏
+            - **残留清理**：自动清理过期备份文件和旧版本下载，保持磁盘整洁
+
+            ### 更新流程
+            ```
+            发现新版本 → 后台下载 → 弹窗确认 → UAC授权 → 秒级完成
+            ```
 
             ## 📦 安装说明
 
-            - **Windows**：下载 `CodeSwitch-amd64-installer.exe` 运行安装，或下载 `CodeSwitch.exe` 直接运行
-            - **macOS (Apple Silicon)**：下载 `codeswitch-macos-arm64.zip`，解压后拖入 Applications 文件夹
-            - **macOS (Intel)**：下载 `codeswitch-macos-amd64.zip`，解压后拖入 Applications 文件夹
+            | 平台 | 文件 | 说明 |
+            |------|------|------|
+            | Windows (首次安装) | `CodeSwitch-amd64-installer.exe` | NSIS 安装器 |
+            | Windows (便携版) | `CodeSwitch.exe` | 直接运行 |
+            | Windows (更新用) | `updater.exe` | 静默更新辅助程序 |
+            | macOS (Apple Silicon) | `codeswitch-macos-arm64.zip` | 解压后拖入 Applications |
+            | macOS (Intel) | `codeswitch-macos-amd64.zip` | 解压后拖入 Applications |
 
-            **完整更新日志**: https://github.com/Rogers-F/code-switch-R/compare/v1.1.25...v1.1.26
+            ## 🔒 文件校验
+
+            下载后可使用 SHA256 校验文件完整性：
+            - `CodeSwitch.exe.sha256`
+            - `updater.exe.sha256`
           draft: false
           prerelease: false
         env:
