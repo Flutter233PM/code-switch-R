@@ -419,6 +419,7 @@ func (prs *ProviderRelayService) forwardRequest(
 	targetURL := joinURL(provider.APIURL, endpoint)
 	headers := cloneMap(clientHeaders)
 	headers["Authorization"] = fmt.Sprintf("Bearer %s", provider.APIKey)
+	headers["X-Api-Key"] = provider.APIKey
 	if _, ok := headers["Accept"]; !ok {
 		headers["Accept"] = "application/json"
 	}
